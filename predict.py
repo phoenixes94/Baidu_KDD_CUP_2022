@@ -1,154 +1,121 @@
-# -*-Encoding: utf-8 -*-
-################################################################################
+# Copyright (c) 2022 PaddlePaddle Authors. All Rights Reserved.
 #
-# Copyright (c) 2022 Baidu.com, Inc. All Rights Reserved
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-################################################################################
-"""
-Description: A demo of the forecasting method
-Authors: Lu,Xinjiang (luxinjiang@baidu.com)
-Date:    2022/04/18
-"""
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
-import time
-import numpy as np
+import glob
+import argparse
 import paddle
-from model import BaselineGruModel
-from common import Experiment, traverse_wind_farm
-from wind_turbine_data import WindTurbineData
-from test_data import TestData
+import paddle.nn.functional as F
+import tqdm
+import yaml
+import numpy as np
+from easydict import EasyDict as edict
+
+import pgl
+from pgl.utils.logger import log
+from paddle.io import DataLoader
+import random
+
+import loss as loss_factory
+from wpf_dataset import PGL4WPFDataset, TestPGL4WPFDataset
+from wpf_model import WPFModel
+import optimization as optim
+from metrics import regressor_scores, regressor_detailed_scores
+from utils import save_model, _create_if_not_exist, load_model
+import matplotlib.pyplot as plt
 
 
-def forecast_one(experiment, test_turbines, train_data):
-    # type: (Experiment, TestData, WindTurbineData) -> np.ndarray
-    """
-    Desc:
-        Forecasting the power of one turbine
-    Args:
-        experiment:
-        test_turbines:
-        train_data:
-    Returns:
-        Prediction for one turbine
-    """
-    args = experiment.get_args()
-    tid = args["turbine_id"]
-    model = BaselineGruModel(args)
-    model_dir = '{}_t{}_i{}_o{}_ls{}_train{}_val{}'.format(
-        args["filename"], args["task"], args["input_len"], args["output_len"], args["lstm_layer"],
-        args["train_size"], args["val_size"]
-    )
-    path_to_model = os.path.join(args["checkpoints"], model_dir, "model_{}".format(str(tid)))
-    model.set_state_dict(paddle.load(path_to_model))
+@paddle.no_grad()
+def predict(config, train_data):  #, valid_data, test_data):
+    data_mean = paddle.to_tensor(train_data.data_mean, dtype="float32")
+    data_scale = paddle.to_tensor(train_data.data_scale, dtype="float32")
 
-    test_x, _ = test_turbines.get_turbine(tid)
-    scaler = train_data.get_scaler(tid)
-    test_x = scaler.transform(test_x)
+    graph = train_data.graph
+    graph = graph.tensor()
 
-    last_observ = test_x[-args["input_len"]:]
-    seq_x = paddle.to_tensor(last_observ)
-    sample_x = paddle.reshape(seq_x, [-1, seq_x.shape[-2], seq_x.shape[-1]])
-    prediction = experiment.inference_one_sample(model, sample_x)
-    prediction = scaler.inverse_transform(prediction)
-    prediction = prediction[0]
-    return prediction.numpy()
+    model = WPFModel(config=config)
 
+    global_step = load_model(config.output_path, model)
+    model.eval()
 
-def forecast(settings):
-    # type: (dict) -> np.ndarray
-    """
-    Desc:
-        Forecasting the wind power in a naive distributed manner
-    Args:
-        settings:
-    Returns:
-        The predictions as a tensor \in R^{134 * 288 * 1}
-    """
-    start_time = time.time()
-    predictions = []
-    settings["turbine_id"] = 0
-    exp = Experiment(settings)
-    # train_data = Experiment.train_data
-    train_data = exp.load_train_data()
-    if settings["is_debug"]:
-        end_train_data_get_time = time.time()
-        print("Load train data in {} secs".format(end_train_data_get_time - start_time))
-        start_time = end_train_data_get_time
-    test_x = Experiment.get_test_x(settings)
-    if settings["is_debug"]:
-        end_test_x_get_time = time.time()
-        print("Get test x in {} secs".format(end_test_x_get_time - start_time))
-        start_time = end_test_x_get_time
-    for i in range(settings["capacity"]):
-        settings["turbine_id"] = i
-        # print('\n>>>>>>> Testing Turbine {:3d} >>>>>>>>>>>>>>>>>>>>>>>>>>\n'.format(i))
-        prediction = forecast_one(exp, test_x, train_data)
-        paddle.device.cuda.empty_cache()
-        predictions.append(prediction)
-        if settings["is_debug"] and (i + 1) % 10 == 0:
-            end_time = time.time()
-            print("\nElapsed time for predicting 10 turbines is {} secs".format(end_time - start_time))
-            start_time = end_time
-    return np.array(predictions)
+    test_x = sorted(glob.glob(os.path.join("predict_data", "test_x", "*")))
+    test_y = sorted(glob.glob(os.path.join("predict_data", "test_y", "*")))
+
+    maes, rmses = [], []
+    for i, (test_x_f, test_y_f) in enumerate(zip(test_x, test_y)):
+        test_x_ds = TestPGL4WPFDataset(filename=test_x_f)
+
+        test_y_ds = TestPGL4WPFDataset(filename=test_y_f)
+
+        test_x = paddle.to_tensor(
+            test_x_ds.get_data()[:, :, -config.input_len:, :], dtype="float32")
+        test_y = paddle.to_tensor(
+            test_y_ds.get_data()[:, :, :config.output_len, :], dtype="float32")
+
+        pred_y = model(test_x, test_y, data_mean, data_scale, graph)
+        pred_y = F.relu(pred_y * data_scale[:, :, :, -1] + data_mean[:, :, :,
+                                                                     -1])
+
+        pred_y = np.expand_dims(pred_y.numpy(), -1)
+        test_y = test_y[:, :, :, -1:].numpy()
+
+        pred_y = np.transpose(pred_y, [
+            1,
+            0,
+            2,
+            3,
+        ])
+        test_y = np.transpose(test_y, [
+            1,
+            0,
+            2,
+            3,
+        ])
+        test_y_df = test_y_ds.get_raw_df()
+
+        _mae, _rmse = regressor_detailed_scores(
+            pred_y, test_y, test_y_df, config.capacity, config.output_len)
+        print('\n\tThe {}-th prediction for File {} -- '
+              'RMSE: {}, MAE: {}, Score: {}'.format(i, test_y_f, _rmse, _mae, (
+                  _rmse + _mae) / 2))
+        maes.append(_mae)
+        rmses.append(_rmse)
+
+    avg_mae = np.array(maes).mean()
+    avg_rmse = np.array(rmses).mean()
+    total_score = (avg_mae + avg_rmse) / 2
+
+    print('\n --- Final MAE: {}, RMSE: {} ---'.format(avg_mae, avg_rmse))
+    print('--- Final Score --- \n\t{}'.format(total_score))
 
 
-def validate_one(experiment, model_folder):
-    # type: (Experiment, str) -> (paddle.tensor, paddle.tensor)
-    """
-    Desc:
-        Forecasting the power for one turbine
-    Args:
-        experiment:
-        model_folder: the location of the model
-    Returns:
-        MAE and RMSE
-    """
-    args = experiment.get_args()
-    model = experiment.get_model()
-    path_to_model = os.path.join(args["checkpoints"], model_folder, 'model_{}'.format(str(args["turbine_id"])))
-    model.set_state_dict(paddle.load(path_to_model))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='main')
+    parser.add_argument("--conf", type=str, default="./config.yaml")
+    args = parser.parse_args()
+    config = edict(yaml.load(open(args.conf), Loader=yaml.FullLoader))
 
-    test_data, test_loader = experiment.get_data(flag='test')
-    predictions = []
-    true_lst = []
-    for i, (batch_x, batch_y) in enumerate(test_loader):
-        sample, true = experiment.process_one_batch(batch_x, batch_y)
-        predictions.append(np.array(sample))
-        true_lst.append(np.array(true))
-    predictions = np.array(predictions)
-    true_lst = np.array(true_lst)
-    predictions = predictions.reshape(-1, predictions.shape[-2], predictions.shape[-1])
-    true_lst = true_lst.reshape(-1, true_lst.shape[-2], true_lst.shape[-1])
+    print(config)
+    size = [config.input_len, config.output_len]
+    train_data = PGL4WPFDataset(
+        config.data_path,
+        filename=config.filename,
+        size=size,
+        flag='train',
+        total_days=config.total_days,
+        train_days=config.train_days,
+        val_days=config.val_days,
+        test_days=config.test_days)
 
-    predictions = test_data.inverse_transform(predictions)
-    true_lst = test_data.inverse_transform(true_lst)
-    raw_df = test_data.get_raw_data()
-
-    return predictions, true_lst, raw_df
-
-
-def validate(settings):
-    # type: (dict) -> tuple
-    """
-    Desc:
-        Forecasting the wind power in a naive distributed manner
-    Args:
-        settings:
-    Returns:
-        The predictions and the ground truths
-    """
-    preds = []
-    gts = []
-    raw_data_ls = []
-    cur_setup = '{}_t{}_i{}_o{}_ls{}_train{}_val{}'.format(
-        settings["filename"], settings["task"], settings["input_len"], settings["output_len"], settings["lstm_layer"],
-        settings["train_size"], settings["val_size"]
-    )
-    results = traverse_wind_farm(validate_one, settings, cur_setup, flag='test')
-    for j in range(settings["capacity"]):
-        pred, gt, raw_data = results[j]
-        preds.append(pred)
-        gts.append(gt)
-        raw_data_ls.append(raw_data)
-
-    return preds, gts, raw_data_ls
+    predict(config, train_data)  #, valid_data, test_data)

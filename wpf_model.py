@@ -179,15 +179,15 @@ class Encoder(nn.Layer):
     def __init__(self, config):
         super(Encoder, self).__init__()
         self.config_file = config
-        self.var_len = config.var_len
-        self.input_len = config.input_len
-        self.output_len = config.output_len
-        self.hidden_dims = config.model.hidden_dims
-        self.nhead = config.model.nhead
-        self.num_encoder_layer = config.model.encoder_layers
+        self.var_len = config["var_len"]
+        self.input_len = config["input_len"]
+        self.output_len = config["output_len"]
+        self.hidden_dims = config["model"]["hidden_dims"]
+        self.nhead = config["model"]["nhead"]
+        self.num_encoder_layer = config["model"]["encoder_layers"]
 
         self.enc_lins = nn.LayerList()
-        self.dropout = config.model.dropout
+        self.dropout = config["model"]["dropout"]
         self.drop = nn.Dropout(self.dropout)
         for _ in range(self.num_encoder_layer):
             self.enc_lins.append(
@@ -211,17 +211,17 @@ class Decoder(nn.Layer):
     def __init__(self, config):
         super(Decoder, self).__init__()
         self.config_file = config
-        self.var_len = config.var_len
-        self.input_len = config.input_len
-        self.output_len = config.output_len
-        self.hidden_dims = config.model.hidden_dims
-        self.nhead = config.model.nhead
-        self.num_decoder_layer = config.model.decoder_layers
+        self.var_len = config["var_len"]
+        self.input_len = config["input_len"]
+        self.output_len = config["output_len"]
+        self.hidden_dims = config["model"]["hidden_dims"]
+        self.nhead = config["model"]["nhead"]
+        self.num_decoder_layer = config["model"]["decoder_layers"]
 
         self.dec_lins = nn.LayerList()
-        self.dropout = config.model.dropout
+        self.dropout = config["model"]["dropout"]
         self.drop = nn.Dropout(self.dropout)
-        self.capacity = config.capacity
+        self.capacity = config["capacity"]
 
         for _ in range(self.num_decoder_layer):
             self.dec_lins.append(
@@ -301,11 +301,11 @@ class WPFModel(nn.Layer):
     def __init__(self, config):
         super(WPFModel, self).__init__()
         self.config_file = config
-        self.var_len = config.var_len
-        self.input_len = config.input_len
-        self.output_len = config.output_len
-        self.hidden_dims = config.model.hidden_dims
-        self.capacity = config.capacity
+        self.var_len = config["var_len"]
+        self.input_len = config["input_len"]
+        self.output_len = config["output_len"]
+        self.hidden_dims = config["model"]["hidden_dims"]
+        self.capacity = config["capacity"]
 
         self.decomp = SeriesDecomp(DECOMP)
 
@@ -315,17 +315,12 @@ class WPFModel(nn.Layer):
         self.t_dec_emb = nn.Embedding(300, self.hidden_dims)
         self.w_dec_emb = nn.Embedding(300, self.hidden_dims)
 
-        self.pos_dec_emb = paddle.create_parameter(
-            shape=[1, self.input_len + self.output_len, self.hidden_dims],
-            dtype='float32')
+        self.pos_dec_emb = paddle.create_parameter(shape=[1, self.input_len + self.output_len, self.hidden_dims], dtype='float32')
 
-        self.pos_emb = paddle.create_parameter(
-            shape=[1, self.input_len, self.hidden_dims], dtype='float32')
+        self.pos_emb = paddle.create_parameter(shape=[1, self.input_len, self.hidden_dims], dtype='float32')
 
-        self.st_conv_encoder = SpatialTemporalConv(self.capacity, self.var_len,
-                                                   self.hidden_dims)
-        self.st_conv_decoder = SpatialTemporalConv(self.capacity, self.var_len,
-                                                   self.hidden_dims)
+        self.st_conv_encoder = SpatialTemporalConv(self.capacity, self.var_len, self.hidden_dims)
+        self.st_conv_decoder = SpatialTemporalConv(self.capacity, self.var_len, self.hidden_dims)
 
         self.enc = Encoder(config)
         self.dec = Decoder(config)
@@ -337,9 +332,7 @@ class WPFModel(nn.Layer):
         """ Initialization hook """
         if isinstance(layer, (nn.Linear, nn.Embedding)):
             if isinstance(layer.weight, paddle.Tensor):
-                layer.weight.set_value(
-                    paddle.tensor.normal(
-                        mean=0.0, std=0.02, shape=layer.weight.shape))
+                layer.weight.set_value(paddle.tensor.normal(mean=0.0, std=0.02, shape=layer.weight.shape))
 
         elif isinstance(layer, nn.LayerNorm):
             layer._epsilon = 1e-12
@@ -362,36 +355,30 @@ class WPFModel(nn.Layer):
         y_time_id = batch_y[:, 0, :, 1].astype("int32")
 
         batch_x_time_emb = self.t_emb(time_id)
-        batch_y_time_emb = self.t_dec_emb(
-            paddle.concat([time_id, y_time_id], 1))
+        batch_y_time_emb = self.t_dec_emb(paddle.concat([time_id, y_time_id], 1))
 
         batch_x_weekday_emb = self.w_emb(weekday_id)
-        batch_y_weekday_emb = self.w_dec_emb(
-            paddle.concat([weekday_id, y_weekday_id], 1))
+        batch_y_weekday_emb = self.w_dec_emb(paddle.concat([weekday_id, y_weekday_id], 1))
 
         batch_x = paddle.transpose(batch_x, [0, 2, 1, 3])
 
         batch_pred_trend = paddle.mean(batch_x, 1, keepdim=True)[:, :, :, -1]
         batch_pred_trend = paddle.tile(batch_pred_trend, [1, output_len, 1])
-        batch_pred_trend = paddle.concat(
-            [self.decomp(batch_x[:, :, :, -1])[0], batch_pred_trend], 1)
+        batch_pred_trend = paddle.concat([self.decomp(batch_x[:, :, :, -1])[0], batch_pred_trend], 1)
 
         batch_x = paddle.reshape(batch_x, [bz, input_len, var_len * id_len])
         _, season_init = self.decomp(batch_x)
 
-        batch_pred_season = paddle.zeros(
-            [bz, output_len, var_len * id_len], dtype="float32")
+        batch_pred_season = paddle.zeros([bz, output_len, var_len * id_len], dtype="float32")
         batch_pred_season = paddle.concat([season_init, batch_pred_season], 1)
 
         batch_x = self.st_conv_encoder(batch_x, batch_graph) + self.pos_emb
 
-        batch_pred_season = self.st_conv_decoder(
-            batch_pred_season, batch_graph) + self.pos_dec_emb
+        batch_pred_season = self.st_conv_decoder(batch_pred_season, batch_graph) + self.pos_dec_emb
 
         batch_x = self.enc(batch_x)
 
-        batch_x_pred, batch_x_trends = self.dec(batch_pred_season,
-                                                batch_pred_trend, batch_x)
+        batch_x_pred, batch_x_trends = self.dec(batch_pred_season,batch_pred_trend, batch_x)
         batch_x_pred = self.pred_nn(batch_x_pred)
 
         pred_y = batch_x_pred + batch_x_trends

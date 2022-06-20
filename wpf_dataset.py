@@ -147,6 +147,7 @@ class PGL4WPFDataset(Dataset):
 
         new_df_data = df_data[feature_name]
 
+        # 在原始数据集基础上加了两列特征：time和weekday
         log.info('adding time')
         t = df_data['Tmstamp'].apply(func_add_t)
         new_df_data.insert(0, 'time', t)
@@ -156,8 +157,7 @@ class PGL4WPFDataset(Dataset):
 
         pd.set_option('mode.chained_assignment', None)
         raw_df_data = new_df_data
-        new_df_data = new_df_data.replace(
-            to_replace=np.nan, value=0, inplace=False)
+        new_df_data = new_df_data.replace(to_replace=np.nan, value=0, inplace=False)
 
         return new_df_data, raw_df_data
 
@@ -291,9 +291,7 @@ class TestPGL4WPFDataset(Dataset):
 
         self.raw_df = []
         for turb_id in range(self.capacity):
-            self.raw_df.append(
-                pd.DataFrame(
-                    data=raw_data[turb_id], columns=cols_data))
+            self.raw_df.append(pd.DataFrame(data=raw_data[turb_id], columns=cols_data))
         return np.expand_dims(data_x, [0])
 
     def get_data(self):
@@ -302,4 +300,5 @@ class TestPGL4WPFDataset(Dataset):
 
 if __name__ == "__main__":
     data_path = "./data"
-    data = PGL4WPFDataset(data_path, filename="wtb5_10.csv")
+    data = PGL4WPFDataset(data_path, filename="wtbdata_245days.csv")
+    print(data)

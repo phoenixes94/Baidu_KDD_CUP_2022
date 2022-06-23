@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import paddle as P
-import re
+
+from paddle.nn import ClipGradByNorm
+from paddle.optimizer import Adam
 
 
 def get_optimizer(model, learning_rate):
-    g_clip = P.nn.ClipGradByNorm(50.0)  #experimental
-    opt = P.optimizer.Adam(
+    g_clip = ClipGradByNorm(50.0)  # experimental
+    opt = Adam(
         learning_rate=learning_rate,
         parameters=model.parameters(),
-        grad_clip=g_clip)
+        grad_clip=g_clip
+    )
     return opt

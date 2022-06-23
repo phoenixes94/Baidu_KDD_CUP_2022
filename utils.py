@@ -13,10 +13,9 @@
 # limitations under the License.
 
 import os
-import re
 import paddle
 import paddle.distributed
-import glob
+from glob import glob
 import shutil
 from pgl.utils.logger import log
 
@@ -37,29 +36,25 @@ def save_model(output_path,
         output_dir = os.path.join(output_path, "model_%d" % steps)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
-        paddle.save(model.state_dict(),
-                    os.path.join(output_dir, "ckpt.pdparams"))
+        paddle.save(model.state_dict(), os.path.join(output_dir, "ckpt.pdparams"))
         if steps is not None:
             paddle.save({
                 "global_step": steps
             }, os.path.join(output_dir, "step"))
         if opt is not None:
-            paddle.save(opt.state_dict(),
-                        os.path.join(output_dir, "opt.pdparams"))
+            paddle.save(opt.state_dict(), os.path.join(output_dir, "opt.pdparams"))
         if lr_scheduler is not None:
-            paddle.save(lr_scheduler.state_dict(),
-                        os.path.join(output_dir, "lr_scheduler.pdparams"))
+            paddle.save(lr_scheduler.state_dict(), os.path.join(output_dir, "lr_scheduler.pdparams"))
         log.info("save model %s" % output_dir)
 
-        ckpt_paths = glob.glob(os.path.join(output_path, "model_*"))
+        ckpt_paths = glob(os.path.join(output_path, "model_*"))
         if len(ckpt_paths) > max_ckpt:
 
             def version(x):
                 x = int(x.split("_")[-1])
                 return x
 
-            rm_ckpt_paths = sorted(
-                ckpt_paths, key=version, reverse=True)[max_ckpt:]
+            rm_ckpt_paths = sorted(ckpt_paths, key=version, reverse=True)[max_ckpt:]
             for ckpt_dir in rm_ckpt_paths:
                 if os.path.exists(ckpt_dir):
                     shutil.rmtree(ckpt_dir)
@@ -70,13 +65,12 @@ def load_model(output_path, model, opt=None, lr_scheduler=None):
         x = int(x.split("_")[-1])
         return x
 
-    ckpt_paths = glob.glob(os.path.join(output_path, "model_*"))
+    ckpt_paths = glob(os.path.join(output_path, "model_*"))
     steps = 0
     if len(ckpt_paths) > 0:
         output_dir = sorted(ckpt_paths, key=version, reverse=True)[0]
 
-        model_state_dict = paddle.load(
-            os.path.join(output_dir, "ckpt.pdparams"))
+        model_state_dict = paddle.load(os.path.join(output_dir, "ckpt.pdparams"))
         model.set_state_dict(model_state_dict)
         log.info("load model from  %s" % output_dir)
 
@@ -95,7 +89,6 @@ def load_model(output_path, model, opt=None, lr_scheduler=None):
             log.info("restore lr_scheduler")
 
         if os.path.exists(os.path.join(output_dir, "lr_scheduler.pdparams")):
-            steps = paddle.load(os.path.join(output_dir, "step"))[
-                "global_step"]
+            steps = paddle.load(os.path.join(output_dir, "step"))["global_step"]
             log.info("restore steps")
     return steps

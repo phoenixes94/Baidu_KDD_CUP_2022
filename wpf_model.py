@@ -16,9 +16,7 @@ import pgl
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
-import numpy as np
-from pgl.utils.logger import log
-import pgl.nn as gnn
+from paddle.nn import Linear, Dropout, MultiHeadAttention, Conv1D, Embedding
 import math
 
 WIN = 3
@@ -38,8 +36,7 @@ class SeriesDecomp(nn.Layer):
 
     def forward(self, x):
         t_x = paddle.transpose(x, [0, 2, 1])
-        mean_x = F.avg_pool1d(
-            t_x, self.kernel_size, stride=1, padding="SAME", exclusive=False)
+        mean_x = F.avg_pool1d(t_x, self.kernel_size, stride=1, padding="SAME", exclusive=False)
         mean_x = paddle.transpose(mean_x, [0, 2, 1])
         return x - mean_x, mean_x
 
@@ -77,19 +74,18 @@ class TransformerDecoderLayer(nn.Layer):
 
         self.decomp = SeriesDecomp(DECOMP)
 
-        self.self_attn = nn.MultiHeadAttention(d_model, nhead)
+        self.self_attn = MultiHeadAttention(d_model, nhead)
 
-        self.cross_attn = nn.MultiHeadAttention(d_model, nhead)
+        self.cross_attn = MultiHeadAttention(d_model, nhead)
 
-        self.linear1 = nn.Linear(d_model, dims_feedforward)
-        self.dropout = nn.Dropout(act_dropout, mode="upscale_in_train")
-        self.linear2 = nn.Linear(dims_feedforward, d_model)
+        self.linear1 = Linear(d_model, dims_feedforward)
+        self.dropout = Dropout(act_dropout, mode="upscale_in_train")
+        self.linear2 = Linear(dims_feedforward, d_model)
 
-        self.linear_trend = nn.Conv1D(
-            d_model, trends_out, WIN, padding="SAME", data_format="NLC")
+        self.linear_trend = Conv1D(d_model, trends_out, WIN, padding="SAME", data_format="NLC")
 
-        self.dropout1 = nn.Dropout(dropout, mode="upscale_in_train")
-        self.dropout2 = nn.Dropout(dropout, mode="upscale_in_train")
+        self.dropout1 = Dropout(dropout, mode="upscale_in_train")
+        self.dropout2 = Dropout(dropout, mode="upscale_in_train")
         self.activation = getattr(F, activation)
 
     def forward(self, src, memory, src_mask=None, cache=None):
@@ -149,14 +145,14 @@ class TransformerEncoderLayer(nn.Layer):
 
         self.decomp = SeriesDecomp(DECOMP)
 
-        self.self_attn = nn.MultiHeadAttention(d_model, nhead)
+        self.self_attn = MultiHeadAttention(d_model, nhead)
 
-        self.linear1 = nn.Linear(d_model, dims_feedforward)
-        self.dropout = nn.Dropout(act_dropout, mode="upscale_in_train")
-        self.linear2 = nn.Linear(dims_feedforward, d_model)
+        self.linear1 = Linear(d_model, dims_feedforward)
+        self.dropout = Dropout(act_dropout, mode="upscale_in_train")
+        self.linear2 = Linear(dims_feedforward, d_model)
 
-        self.dropout1 = nn.Dropout(dropout, mode="upscale_in_train")
-        self.dropout2 = nn.Dropout(dropout, mode="upscale_in_train")
+        self.dropout1 = Dropout(dropout, mode="upscale_in_train")
+        self.dropout2 = Dropout(dropout, mode="upscale_in_train")
         self.activation = getattr(F, activation)
 
     def forward(self, src, src_mask=None, cache=None):
@@ -309,11 +305,11 @@ class WPFModel(nn.Layer):
 
         self.decomp = SeriesDecomp(DECOMP)
 
-        self.t_emb = nn.Embedding(300, self.hidden_dims)
-        self.w_emb = nn.Embedding(300, self.hidden_dims)
+        self.t_emb = Embedding(300, self.hidden_dims)
+        self.w_emb = Embedding(300, self.hidden_dims)
 
-        self.t_dec_emb = nn.Embedding(300, self.hidden_dims)
-        self.w_dec_emb = nn.Embedding(300, self.hidden_dims)
+        self.t_dec_emb = Embedding(300, self.hidden_dims)
+        self.w_dec_emb = Embedding(300, self.hidden_dims)
 
         self.pos_dec_emb = paddle.create_parameter(shape=[1, self.input_len + self.output_len, self.hidden_dims], dtype='float32')
 
